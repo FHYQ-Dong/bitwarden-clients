@@ -7453,5 +7453,8 @@
         "example": "Unknown organization"
       }
     }
+  },
+  "health": {
+    "message": "Health"
   }
 }
