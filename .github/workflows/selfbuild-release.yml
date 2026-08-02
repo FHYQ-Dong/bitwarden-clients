@@ -122,7 +122,8 @@ jobs:
           j.appx.publisherDisplayName = process.env.APPX_PUBLISHER_DISPLAY;
           j.appx.customManifestPath = 'custom-appx-manifest.xml'; // brings the com:Extension into the appx
           j.win = j.win || {};
-          j.win.publisherName = process.env.APPX_PUBLISHER; // electron-builder can't parse our openssl pfx to auto-detect
+          delete j.win.publisherName; // invalid at win root in electron-builder 26.x (schema moved it)
+          j.win.signtoolOptions = Object.assign({}, j.win.signtoolOptions, { publisherName: process.env.APPX_PUBLISHER });
           fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
           console.log('overlay applied to', p);
           NODE
