@@ -201,6 +201,7 @@ jobs:
           # Trust our private CA root on the runner so /pa verify actually validates the chain
           # (leaf + intermediate are embedded in the signature; only the root needs trusting).
           certutil -addstore -f Root "$RUNNER_TEMP/selfbuild/FHYQ-Dong-CAroot.crt"
+          certutil -addstore -f CA "$RUNNER_TEMP/selfbuild/FHYQ-Software-CA.crt"
           "$SIGNTOOL" verify //pa "$APPX"
           echo "APPX_PATH=$APPX" >> "$GITHUB_ENV"
 
