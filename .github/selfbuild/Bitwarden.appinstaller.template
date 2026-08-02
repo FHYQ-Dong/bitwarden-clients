@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App Installer manifest for the self-built Bitwarden (Windows passkey provider).
+  The workflow substitutes __TOKENS__ each build. App Installer polls the Uri below and
+  auto-updates the installed package when Version increases.
+-->
+<AppInstaller
+    xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+    Version="__VERSION__"
+    Uri="__APPINSTALLER_URI__">
+  <MainPackage
+      Name="__IDENTITY__"
+      Publisher="__PUBLISHER__"
+      Version="__VERSION__"
+      ProcessorArchitecture="x64"
+      Uri="__APPX_URI__" />
+  <UpdateSettings>
+    <!-- Check on launch; if a newer Version is live, prompt/apply the update. -->
+    <OnLaunch HoursBetweenUpdateChecks="8" />
+    <AutomaticBackgroundTask />
+    <ForceUpdateFromAnyVersion>true</ForceUpdateFromAnyVersion>
+  </UpdateSettings>
+</AppInstaller>

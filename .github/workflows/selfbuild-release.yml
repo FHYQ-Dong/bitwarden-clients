@@ -1,0 +1,233 @@
+# Self-build Bitwarden desktop (Windows passkey provider) — auto track upstream, build, sign, publish.
+#
+# Bridge-period design (see README-selfbuild.md):
+#   - Upstream RELEASE TAGS do NOT yet contain PM-29791 (native OS user verification), which the
+#     Windows passkey assertion needs. So during the bridge period we build from `upstream/main`
+#     PLUS the PM-29791 feature branches listed below.
+#   - When PM-29791 lands in an upstream release tag: set BUILD_FROM_TAG=true and empty PM_BRANCHES.
+#   - When Bitwarden ships the feature enabled in the official signed appx: delete this workflow and
+#     just install the official Bitwarden. This whole thing is a temporary bridge.
+#
+# Required repo secret:
+#   SIGNING_PFX_BASE64  = base64 of the CI signing pfx (subject CN=Bitwarden-SelfBuild ..., passwordless)
+#
+# The published .appinstaller drives App Installer auto-update on machines that installed via it.
+
+name: selfbuild-release
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 6 * * *" # daily 06:00 UTC; only actually builds when upstream moved
+
+concurrency:
+  group: selfbuild-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/bitwarden/clients.git
+  # Bridge-period source. When PM-29791 is in a release tag, flip BUILD_FROM_TAG=true and clear PM_BRANCHES.
+  BUILD_FROM_TAG: "false"
+  SOURCE_REF: "upstream/main"
+  PM_BRANCHES: >-
+    upstream/skunkworks/desktop-autofill/prepare-native-uv1
+    upstream/skunkworks/desktop-autofill/windows-native-uv
+  # appx identity — must stay constant so the package identity / upgrade path is preserved.
+  APPX_IDENTITY_NAME: "BitwardenSelfBuild.Desktop"
+  APPX_PUBLISHER: "CN=Bitwarden-SelfBuild, OU=FHYQ-Software, O=FHYQ-Dong, S=BJ, C=CN"
+  APPX_PUBLISHER_DISPLAY: "Bitwarden SelfBuild"
+  # Fixed release tag that always holds the latest build + the .appinstaller (stable URL for auto-update).
+  RELEASE_TAG: "selfbuild-latest"
+
+permissions:
+  contents: write # create/update the selfbuild-latest release
+  issues: write # open an issue if the PM-29791 merge conflicts
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout fork (for this workflow + overlay)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Stash overlay assets (survive the upstream checkout)
+        shell: bash
+        run: cp -r .github/selfbuild "$RUNNER_TEMP/selfbuild"
+
+      - name: Fetch upstream + feature branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM" || git remote set-url upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+          if [ "$BUILD_FROM_TAG" = "true" ]; then
+            git fetch --tags upstream
+          fi
+          for b in $PM_BRANCHES; do
+            ref="${b#upstream/}"
+            git fetch --no-tags upstream "$ref:refs/remotes/upstream/$ref" || true
+          done
+
+      - name: Compute source commit + skip if unchanged
+        id: src
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_SHA="$(git rev-parse "$SOURCE_REF")"
+          echo "src_sha=$SRC_SHA" >> "$GITHUB_OUTPUT"
+          # last built sha is stored in the release body marker: built-from:<sha>
+          LAST="$(gh release view "$RELEASE_TAG" --json body -q .body 2>/dev/null | grep -oE 'built-from:[0-9a-f]{40}' | cut -d: -f2 || true)"
+          echo "last_sha=$LAST"
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$SRC_SHA" = "$LAST" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No upstream change since last build ($SRC_SHA); skipping."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Assemble build tree (upstream + PM-29791 + overlay)
+        if: steps.src.outputs.changed == 'true'
+        id: assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.email "ci@selfbuild"
+          git config user.name "selfbuild-ci"
+          git checkout -B __build "$SOURCE_REF"
+          # Merge the still-open native-UV feature branches (bridge period only).
+          if [ -n "${PM_BRANCHES// /}" ] && [ "$BUILD_FROM_TAG" != "true" ]; then
+            for b in $PM_BRANCHES; do
+              echo "::group::merge $b"
+              if ! git merge --no-edit "$b"; then
+                echo "::endgroup::"
+                echo "conflict=$b" >> "$GITHUB_OUTPUT"
+                git merge --abort || true
+                exit 1
+              fi
+              echo "::endgroup::"
+            done
+          fi
+          # --- Overlay: appx identity + custom manifest (com:Extension) + publisherName ---
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = 'apps/desktop/electron-builder.json';
+          const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+          j.appx = j.appx || {};
+          j.appx.identityName = process.env.APPX_IDENTITY_NAME;
+          j.appx.publisher = process.env.APPX_PUBLISHER;
+          j.appx.publisherDisplayName = process.env.APPX_PUBLISHER_DISPLAY;
+          j.appx.customManifestPath = 'custom-appx-manifest.xml'; // brings the com:Extension into the appx
+          j.win = j.win || {};
+          j.win.publisherName = process.env.APPX_PUBLISHER; // electron-builder can't parse our openssl pfx to auto-detect
+          fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+          console.log('overlay applied to', p);
+          NODE
+          # --- Optional: enable the flag at build time too (belt-and-suspenders; remove if enabled server-side) ---
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = 'libs/common/src/enums/feature-flag.enum.ts';
+          let s = fs.readFileSync(p, 'utf8');
+          if (!/const TRUE = true as boolean;/.test(s)) s = s.replace(/const FALSE = false as boolean;/, m => m + '\nconst TRUE = true as boolean;');
+          s = s.replace(/\[FeatureFlag\.WindowsNativeCredentialSync\]:\s*FALSE,/, '[FeatureFlag.WindowsNativeCredentialSync]: TRUE,');
+          fs.writeFileSync(p, s);
+          console.log('feature flag overlay applied');
+          NODE
+          echo "version=$(node -p "require('./apps/desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue on merge conflict
+        if: failure() && steps.assemble.outputs.conflict != ''
+        shell: bash
+        run: |
+          gh issue create --title "selfbuild: PM-29791 merge conflict on $(date -u +%F)" \
+            --body "Auto-merge of \`${{ steps.assemble.outputs.conflict }}\` onto \`$SOURCE_REF\` conflicted. Resolve manually or update PM_BRANCHES. (Once PM-29791 lands in a release tag, set BUILD_FROM_TAG=true and clear PM_BRANCHES.)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Setup Node
+        if: steps.src.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Setup Rust
+        if: steps.src.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install deps
+        if: steps.src.outputs.changed == 'true'
+        run: npm ci
+
+      - name: Build native (napi + plugin authenticator)
+        if: steps.src.outputs.changed == 'true'
+        working-directory: apps/desktop
+        run: npm run build-native
+
+      - name: Build app (webpack)
+        if: steps.src.outputs.changed == 'true'
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Write signing cert
+        if: steps.src.outputs.changed == 'true'
+        id: cert
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.SIGNING_PFX_BASE64 }}" | base64 -d > "$RUNNER_TEMP/ci.pfx"
+          echo "pfx=$RUNNER_TEMP/ci.pfx" >> "$GITHUB_OUTPUT"
+
+      - name: Package + sign appx
+        if: steps.src.outputs.changed == 'true'
+        working-directory: apps/desktop
+        shell: bash
+        env:
+          CSC_LINK: ${{ steps.cert.outputs.pfx }}
+          CSC_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          npx electron-builder --win appx --x64 -p never
+          # electron-builder's own appx signature can be rejected by Add-AppxPackage; re-sign with signtool to be safe.
+          APPX="$(ls dist/*-x64.appx | head -1)"
+          SIGNTOOL="$(ls '/c/Program Files (x86)/Windows Kits/10/bin'/*/x64/signtool.exe | sort -V | tail -1)"
+          "$SIGNTOOL" sign //fd SHA256 //f "$CSC_LINK" //p "" "$APPX"
+          "$SIGNTOOL" verify //pa "$APPX"
+          echo "APPX_PATH=$APPX" >> "$GITHUB_ENV"
+
+      - name: Generate .appinstaller
+        if: steps.src.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${{ steps.assemble.outputs.version }}.0"
+          APPX_NAME="$(basename "$APPX_PATH")"
+          BASE="https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG"
+          mkdir -p out
+          cp "apps/desktop/$APPX_PATH" "out/$APPX_NAME"
+          sed -e "s|__VERSION__|$VER|g" \
+              -e "s|__PUBLISHER__|$APPX_PUBLISHER|g" \
+              -e "s|__IDENTITY__|$APPX_IDENTITY_NAME|g" \
+              -e "s|__APPINSTALLER_URI__|$BASE/Bitwarden.appinstaller|g" \
+              -e "s|__APPX_URI__|$BASE/$APPX_NAME|g" \
+              "$RUNNER_TEMP/selfbuild/Bitwarden.appinstaller.template" > out/Bitwarden.appinstaller
+          echo "APPX_NAME=$APPX_NAME" >> "$GITHUB_ENV"
+
+      - name: Publish to selfbuild-latest release
+        if: steps.src.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release delete "$RELEASE_TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$RELEASE_TAG" \
+            --title "Self-build (native passkey provider) — v${{ steps.assemble.outputs.version }}" \
+            --notes "Auto-built from \`$SOURCE_REF\` + PM-29791. built-from:${{ steps.src.outputs.src_sha }}
+          Install (auto-updating): \`Add-AppxPackage -AppInstallerFile $RELEASE_TAG/Bitwarden.appinstaller\`" \
+            "out/$APPX_NAME" "out/Bitwarden.appinstaller"
+        env:
+          GH_TOKEN: ${{ github.token }}
