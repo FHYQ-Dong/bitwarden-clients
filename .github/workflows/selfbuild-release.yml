@@ -137,6 +137,20 @@ jobs:
           fs.writeFileSync(p, s);
           console.log('feature flag overlay applied');
           NODE
+          # --- Pin the appx Identity Version to <upstream-version>.<run_number> ---
+          # electron-builder's ${version} macro would pad to x.y.z.0 (same every build at one upstream
+          # version), which never triggers App Installer updates. Hardcode a monotonic 4th component.
+          export BUILDVER="$(node -p "require('./apps/desktop/package.json').version").${{ github.run_number }}"
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = 'apps/desktop/custom-appx-manifest.xml';
+          let s = fs.readFileSync(p, 'utf8');
+          const macro = 'Version="${version}"';
+          if (!s.includes(macro)) throw new Error('appx manifest Version macro not found');
+          s = s.replace(macro, 'Version="' + process.env.BUILDVER + '"');
+          fs.writeFileSync(p, s);
+          console.log('appx Identity Version pinned to', process.env.BUILDVER);
+          NODE
           echo "version=$(node -p "require('./apps/desktop/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Open issue on merge conflict
@@ -193,9 +207,7 @@ jobs:
           CSC_KEY_PASSWORD: ""
         run: |
           set -euo pipefail
-          # buildVersion becomes the appx version's 4th component (revision), so each CI run produces a
-          # strictly-higher version even at the same upstream version — required for App Installer auto-update.
-          npx electron-builder --win appx --x64 -p never -c.buildVersion="${{ github.run_number }}"
+          npx electron-builder --win appx --x64 -p never
           # electron-builder's own appx signature can be rejected by Add-AppxPackage; re-sign with signtool to be safe.
           APPX="$(ls dist/*-x64.appx | head -1)"
           SIGNTOOL="$(ls '/c/Program Files (x86)/Windows Kits/10/bin'/*/x64/signtool.exe | sort -V | tail -1)"
