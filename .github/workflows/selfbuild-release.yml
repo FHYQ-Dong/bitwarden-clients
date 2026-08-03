@@ -199,8 +199,10 @@ jobs:
           SIGNTOOL="$(ls '/c/Program Files (x86)/Windows Kits/10/bin'/*/x64/signtool.exe | sort -V | tail -1)"
           # Embed the full chain (leaf + intermediate) into the appx signature via /ac, so the package
           # installs on any machine that trusts the ROOT — no need to import the intermediate anywhere.
-          "$SIGNTOOL" sign //fd SHA256 //ac "$RUNNER_TEMP/selfbuild/FHYQ-Software-CA.crt" //f "$CSC_LINK" //p "" "$APPX"
-          # Trust our private CA root on the runner so /pa verify can validate (intermediate is embedded).
+          "$SIGNTOOL" sign //fd SHA256 //ac "$RUNNER_TEMP/selfbuild/FHYQ-Software-CA.cer" //f "$CSC_LINK" //p "" "$APPX"
+          # Trust only the ROOT on the runner (NOT the intermediate). /pa verify then only passes if the
+          # intermediate was actually embedded into the appx signature by /ac — a real check that the
+          # package will install on end-user machines without importing the intermediate.
           certutil -addstore -f Root "$RUNNER_TEMP/selfbuild/FHYQ-Dong-CAroot.crt"
           "$SIGNTOOL" verify //pa "$APPX"
           echo "APPX_PATH=$APPX" >> "$GITHUB_ENV"
