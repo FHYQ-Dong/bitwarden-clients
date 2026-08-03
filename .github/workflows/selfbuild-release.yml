@@ -193,7 +193,9 @@ jobs:
           CSC_KEY_PASSWORD: ""
         run: |
           set -euo pipefail
-          npx electron-builder --win appx --x64 -p never
+          # buildVersion becomes the appx version's 4th component (revision), so each CI run produces a
+          # strictly-higher version even at the same upstream version — required for App Installer auto-update.
+          npx electron-builder --win appx --x64 -p never -c.buildVersion="${{ github.run_number }}"
           # electron-builder's own appx signature can be rejected by Add-AppxPackage; re-sign with signtool to be safe.
           APPX="$(ls dist/*-x64.appx | head -1)"
           SIGNTOOL="$(ls '/c/Program Files (x86)/Windows Kits/10/bin'/*/x64/signtool.exe | sort -V | tail -1)"
@@ -214,7 +216,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VER="${{ steps.assemble.outputs.version }}.0"
+          VER="${{ steps.assemble.outputs.version }}.${{ github.run_number }}"
           APPX_NAME="$(basename "$APPX_PATH")"
           BASE="https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG"
           mkdir -p out
