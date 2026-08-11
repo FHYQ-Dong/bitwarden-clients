@@ -138,6 +138,23 @@ jobs:
           fs.writeFileSync(p, s);
           console.log('feature flag overlay applied');
           NODE
+          # --- Drift fixups ---
+          # windows-native-uv is based on an older main; when upstream renames/moves files, `-X theirs`
+          # keeps the branch's now-stale references. Reconcile the known ones here (add more as upstream
+          # drifts). Each is a no-op once upstream rebases the branch.
+          node - <<'NODE'
+          const fs = require('fs');
+          const fixups = [
+            // upstream renamed desktop-autotype.service -> desktop-autotype-mvp.service (PM-40xxx);
+            // the branch's stale, unused import breaks tsc. Drop it (providers already use the Mvp service).
+            { file: 'apps/desktop/src/app/services/services.module.ts',
+              remove: 'import { DesktopAutotypeService } from "../../autofill/services/desktop-autotype.service";\n' },
+          ];
+          for (const f of fixups) {
+            let s = fs.readFileSync(f.file, 'utf8');
+            if (s.includes(f.remove)) { s = s.replace(f.remove, ''); fs.writeFileSync(f.file, s); console.log('drift-fixup applied to', f.file); }
+          }
+          NODE
           # --- Pin the appx Identity Version to <upstream-version>.<run_number> ---
           # electron-builder's ${version} macro would pad to x.y.z.0 (same every build at one upstream
           # version), which never triggers App Installer updates. Hardcode a monotonic 4th component.
