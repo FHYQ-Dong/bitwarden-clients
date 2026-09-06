@@ -29,10 +29,10 @@ env:
   # Bridge-period source. When PM-29791 is in a release tag, flip BUILD_FROM_TAG=true and clear PM_BRANCHES.
   BUILD_FROM_TAG: "false"
   SOURCE_REF: "upstream/main"
-  # prepare-native-uv1 landed upstream (PR #22176) and its branch was deleted — dropped here.
-  # Only windows-native-uv remains unmerged. When it lands too, set BUILD_FROM_TAG and clear this.
-  PM_BRANCHES: >-
-    upstream/skunkworks/desktop-autofill/windows-native-uv
+  # PM-29791 fully landed in upstream/main (both prepare #22176 and the Windows UV; their skunkworks
+  # branches were deleted). Nothing to merge anymore — build straight from main. This ends the
+  # branch-merge drift. (When a release TAG carries it, optionally set BUILD_FROM_TAG for extra stability.)
+  PM_BRANCHES: ""
   # appx identity — must stay constant so the package identity / upgrade path is preserved.
   APPX_IDENTITY_NAME: "BitwardenSelfBuild.Desktop"
   APPX_PUBLISHER: "CN=Bitwarden-SelfBuild, OU=FHYQ-Software, O=FHYQ-Dong, S=BJ, C=CN"
