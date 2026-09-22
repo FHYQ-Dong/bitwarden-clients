@@ -149,6 +149,23 @@ jobs:
           const macro = 'Version="${version}"';
           if (!s.includes(macro)) throw new Error('appx manifest Version macro not found');
           s = s.replace(macro, 'Version="' + process.env.BUILDVER + '"');
+          // The upstream cross-build template now needs its COM extension injected explicitly.
+          // Read the stable channel's runtime CLSID; the beta extension uses a different one.
+          const extensionsMacro = '${customExtensions}';
+          if (s.includes(extensionsMacro)) {
+            const { clsid } = JSON.parse(fs.readFileSync('apps/desktop/resources/windows_plugin_authenticator_config.json', 'utf8'));
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clsid)) {
+              throw new Error('Invalid stable passkey provider CLSID');
+            }
+            s = s.replace(extensionsMacro, `
+                <com:Extension xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10" Category="windows.comServer">
+                  <com:ComServer>
+                    <com:ExeServer Executable="app\\bitwarden_plugin_authenticator.exe" Arguments="serve" DisplayName="Bitwarden SelfBuild Passkey Manager">
+                      <com:Class Id="${clsid}" DisplayName="Bitwarden SelfBuild Passkey Manager" />
+                    </com:ExeServer>
+                  </com:ComServer>
+                </com:Extension>`);
+          }
           fs.writeFileSync(p, s);
           console.log('appx Identity Version pinned to', process.env.BUILDVER);
           NODE
